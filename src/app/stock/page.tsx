@@ -57,19 +57,17 @@ export default function StockPage() {
 
   function setEdit(campoId: string, prodId: string, key: 's'|'i'|'c', val: number) {
     setEdits(prev => {
-      const base = prev[campoId]?.[prodId]
       const fila = stock.find(f => f.campo_id === campoId && f.producto_id === prodId)
+      const existing = prev[campoId]?.[prodId] ?? {
+        s: fila?.stock_caf_sacos      ?? 0,
+        i: fila?.ingreso_sacos        ?? 0,
+        c: fila?.consumo_diario_sacos ?? 0,
+      }
       return {
         ...prev,
         [campoId]: {
           ...(prev[campoId] ?? {}),
-          [prodId]: {
-            s: fila?.stock_caf_sacos      ?? 0,
-            i: fila?.ingreso_sacos        ?? 0,
-            c: fila?.consumo_diario_sacos ?? 0,
-            ...(base ?? {}),
-            [key]: val,
-          },
+          [prodId]: { ...existing, [key]: val },
         },
       }
     })
