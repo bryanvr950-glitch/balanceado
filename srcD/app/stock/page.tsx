@@ -1,0 +1,580 @@
+'use client'
+
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { supabaseBrowser } from '@/lib/supabase-browser'
+import { Badge } from '@/components/ui/Badge'
+import { sacosATn, kgHa, diasInventario, nivelAlerta, fmtN, fmtTn, fmtDias } from '@/lib/calculos'
+import { toast } from 'sonner'
+import type { StockFila, NivelAlerta, Producto, Campo } from '@/types'
+
+// ---- Tipos locales ----
+interface Edits { [campoId: string]: { [prodId: string]: { s: number; i: number; c: number } } }
+
+export default function StockPage() {
+  const [tab,     setTab]     = useState<'stock'|'consumo'|'historial'>('stock')
+  const [fecha,   setFecha]   = useState(() => new Date().toISOString().split('T')[0])
+  const [stock,   setStock]   = useState<StockFila[]>([])
+  const [campos,  setCampos]  = useState<Campo[]>([])
+  const [prods,   setProds]   = useState<Producto[]>([])
+  const [edits,   setEdits]   = useState<Edits>({})
+  const [loading, setLoading] = useState(true)
+  const [saving,  setSaving]  = useState(false)
+  const [caf,     setCAF]     = useState(false)
+  const supabase = supabaseBrowser()
+
+  // Cargar datos
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/stock').then(r => r.json()),
+      supabase.from('campos').select('id,codigo,nombre,hectareas,empresa_id,empresa:empresas(codigo,nombre)').then(r => r.data ?? []),
+      supabase.from('productos').select('*').then(r => r.data ?? []),
+    ]).then(([s, c, p]) => {
+      setStock(s); setCampos(c as any); setProds(p as any); setLoading(false)
+    })
+  }, [])
+
+  // Agrupar stock por campo
+  const porCampo = new Map<string, StockFila[]>()
+  for (const f of stock) {
+    if (!porCampo.has(f.campo_id)) porCampo.set(f.campo_id, [])
+    porCampo.get(f.campo_id)!.push(f)
+  }
+
+  // Aplicar edits a los datos visualizados
+  function filaConEdits(f: StockFila): StockFila & { _editado: boolean } {
+    const e = edits[f.campo_id]?.[f.producto_id]
+    if (!e) return { ...f, _editado: false }
+    const total = e.s + e.i
+    const dias  = diasInventario(total, e.c)
+    return {
+      ...f, _editado: true,
+      stock_caf_sacos:      e.s, ingreso_sacos: e.i,
+      stock_total_sacos:    total, stock_total_tn: sacosATn(total),
+      consumo_diario_sacos: e.c,  dias_inventario: dias,
+      nivel_alerta:         nivelAlerta(dias),
+    }
+  }
+
+  function setEdit(campoId: string, prodId: string, key: 's'|'i'|'c', val: number) {
+    setEdits(prev => {
+      const base = prev[campoId]?.[prodId]
+      const fila = stock.find(f => f.campo_id === campoId && f.producto_id === prodId)
+      return {
+        ...prev,
+        [campoId]: {
+          ...(prev[campoId] ?? {}),
+          [prodId]: {
+            s: fila?.stock_caf_sacos      ?? 0,
+            i: fila?.ingreso_sacos        ?? 0,
+            c: fila?.consumo_diario_sacos ?? 0,
+            ...(base ?? {}),
+            [key]: val,
+          },
+        },
+      }
+    })
+  }
+
+  async function guardar() {
+    if (!Object.keys(edits).length) { toast.error('Sin cambios para guardar'); return }
+    setSaving(true)
+    try {
+      for (const [campoId, prodMap] of Object.entries(edits)) {
+        const detalle = Object.entries(prodMap).map(([producto_id, v]) => ({
+          producto_id,
+          stock_caf_sacos:      v.s,
+          ingreso_sacos:        v.i,
+          consumo_diario_sacos: v.c,
+        }))
+        // Incluir también las filas sin editar para preservar historial
+        const filasSinEditar = stock
+          .filter(f => f.campo_id === campoId && !prodMap[f.producto_id])
+          .map(f => ({
+            producto_id:          f.producto_id,
+            stock_caf_sacos:      f.stock_caf_sacos,
+            ingreso_sacos:        f.ingreso_sacos,
+            consumo_diario_sacos: f.consumo_diario_sacos,
+          }))
+
+        const res = await fetch('/api/snapshots', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fecha, campo_id: campoId, detalle: [...detalle, ...filasSinEditar] }),
+        })
+        if (!res.ok) throw new Error((await res.json()).error)
+      }
+      // Recargar stock
+      const s = await fetch('/api/stock').then(r => r.json())
+      setStock(s); setEdits({})
+      toast.success(`✅ ${fecha} guardado`)
+    } catch (e: any) {
+      toast.error(e.message ?? 'Error al guardar')
+    } finally { setSaving(false) }
+  }
+
+  async function logout() {
+    await supabase.auth.signOut()
+    window.location.href = '/login'
+  }
+
+  const hayEdits   = Object.keys(edits).length > 0
+  const totalSacos = stock.reduce((s, f) => s + f.stock_total_sacos, 0)
+  const enRojo     = new Set(stock.filter(f => f.nivel_alerta === 'rojo').map(f => f.campo_id)).size
+
+  return (
+    <div className="min-h-screen bg-[#f4f1eb]">
+      {/* Header */}
+      <header className="bg-[#2d5a3d] text-white px-4 py-3 flex items-center gap-2 sticky top-0 z-40 shadow-md flex-wrap">
+        <span className="text-lg">🦐</span>
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-sm leading-tight">Stock Balanceado</div>
+          <div className="text-[10px] opacity-60">Grupo Camaronero · Beta</div>
+        </div>
+        <input type="date" value={fecha} onChange={e => setFecha(e.target.value)}
+          className="bg-white/15 border border-white/25 rounded-full px-3 py-1.5 text-xs text-white outline-none" />
+        <button onClick={() => setCAF(true)}
+          className="bg-white/90 text-[#2d5a3d] text-xs font-semibold px-3 py-1.5 rounded-full hover:bg-white transition-colors">
+          📷 CAF
+        </button>
+        <button onClick={guardar} disabled={saving || !hayEdits}
+          className={`text-xs px-3 py-1.5 rounded-full transition-colors font-semibold ${hayEdits ? 'bg-white text-[#2d5a3d]' : 'bg-white/15 text-white/50 cursor-not-allowed'}`}>
+          {saving ? '⏳' : '💾'} Guardar
+        </button>
+        <button onClick={logout} className="text-white/50 hover:text-white text-xs px-2">⎋</button>
+      </header>
+
+      <div className="max-w-5xl mx-auto px-3 py-4">
+        {/* KPIs */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className="bg-white border border-gray-200 rounded-xl p-3 text-center">
+            <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">Stock total</div>
+            <div className="text-lg font-bold font-mono text-[#2d5a3d]">{fmtN(totalSacos)}</div>
+            <div className="text-[10px] text-gray-400">sacos</div>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-xl p-3 text-center">
+            <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">TN total</div>
+            <div className="text-lg font-bold font-mono text-[#2d5a3d]">{fmtTn(sacosATn(totalSacos))}</div>
+            <div className="text-[10px] text-gray-400">toneladas</div>
+          </div>
+          <div className={`border rounded-xl p-3 text-center ${enRojo > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'}`}>
+            <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">Campos en rojo</div>
+            <div className={`text-lg font-bold font-mono ${enRojo > 0 ? 'text-red-700' : 'text-[#2d5a3d]'}`}>{enRojo}</div>
+            <div className="text-[10px] text-gray-400">de 11</div>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-1 mb-4 bg-[#edeae2] p-1 rounded-xl w-fit">
+          {(['stock','consumo','historial'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all capitalize ${tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+              {t === 'stock' ? '📦 Stock' : t === 'consumo' ? '📊 Consumo' : '📁 Historial'}
+            </button>
+          ))}
+        </div>
+
+        {loading && <div className="text-center py-12 text-gray-400 text-sm">Cargando…</div>}
+
+        {!loading && tab === 'stock' && (
+          <div>
+            {Array.from(porCampo.entries()).map(([campoId, filas]) => {
+              const filasConE = filas.map(filaConEdits)
+              const totalC    = filasConE.reduce((s, f) => s + f.stock_total_sacos, 0)
+              const totalConsumo = filasConE.reduce((s, f) => s + f.consumo_diario_sacos, 0)
+              const diasC     = diasInventario(totalC, totalConsumo)
+              const nivelC    = nivelAlerta(diasC)
+              const c         = campos.find(x => x.id === campoId)
+              return (
+                <div key={campoId} className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-3">
+                  <div className="bg-gray-50 border-b px-3 py-2 flex items-center gap-2">
+                    <span className="font-semibold text-sm">🦐 {filas[0].campo_nombre}</span>
+                    <span className="text-xs text-gray-400">{filas[0].empresa_nombre} · {c?.hectareas.toLocaleString('es')} ha</span>
+                    <div className="ml-auto"><Badge nivel={nivelC} dias={diasC} /></div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-gray-50 border-b">
+                          {['Balanceado','Stock CAF','+ Ingreso','Total','TN','Consumo/día','Días','Alerta'].map(h => (
+                            <th key={h} className="px-2.5 py-1.5 text-left text-[10px] uppercase tracking-wide font-medium text-gray-400">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filasConE.map(f => (
+                          <tr key={f.producto_id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                            <td className="px-2.5 py-1.5 text-gray-800 font-medium">{f.producto_nombre}</td>
+                            <td className="px-2.5 py-1.5">
+                              <NumInput val={f.stock_caf_sacos} filled={f.stock_caf_sacos > 0}
+                                onChange={v => setEdit(campoId, f.producto_id, 's', v)} />
+                            </td>
+                            <td className="px-2.5 py-1.5">
+                              <NumInput val={f.ingreso_sacos} filled={f.ingreso_sacos > 0}
+                                cls="border-green-200 bg-green-50"
+                                onChange={v => setEdit(campoId, f.producto_id, 'i', v)} />
+                            </td>
+                            <td className="px-2.5 py-1.5 font-semibold font-mono">{f.stock_total_sacos > 0 ? fmtN(f.stock_total_sacos) : '—'}</td>
+                            <td className="px-2.5 py-1.5 font-mono text-gray-500">{f.stock_total_sacos > 0 ? fmtTn(f.stock_total_tn) : '—'}</td>
+                            <td className="px-2.5 py-1.5">
+                              <NumInput val={f.consumo_diario_sacos} filled={f.consumo_diario_sacos > 0}
+                                onChange={v => setEdit(campoId, f.producto_id, 'c', v)} />
+                            </td>
+                            <td className="px-2.5 py-1.5 font-mono font-medium">{fmtDias(f.dias_inventario)}</td>
+                            <td className="px-2.5 py-1.5"><Badge nivel={f.nivel_alerta} dias={f.dias_inventario} /></td>
+                          </tr>
+                        ))}
+                        {/* Totales */}
+                        <tr className="bg-gray-50 border-t font-semibold">
+                          <td className="px-2.5 py-1.5 text-gray-600">Total</td>
+                          <td colSpan={2} className="px-2.5 py-1.5 text-gray-400 text-[10px]">—</td>
+                          <td className="px-2.5 py-1.5 font-mono">{fmtN(totalC)}</td>
+                          <td className="px-2.5 py-1.5 font-mono text-gray-500">{fmtTn(sacosATn(totalC))}</td>
+                          <td className="px-2.5 py-1.5 font-mono">{fmtN(totalConsumo)}</td>
+                          <td className="px-2.5 py-1.5 font-mono">{fmtDias(diasC)}</td>
+                          <td className="px-2.5 py-1.5"><Badge nivel={nivelC} dias={diasC} /></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {!loading && tab === 'consumo' && <TabConsumo stock={stock} campos={campos} fecha={fecha} />}
+        {!loading && tab === 'historial' && <TabHistorial />}
+      </div>
+
+      {caf && <ModalCAF campos={campos} productos={prods} onClose={() => setCAF(false)}
+        onAplicar={(campoId, prodId, saldo, consumo) => {
+          if (saldo !== null) setEdit(campoId, prodId, 's', saldo)
+          if (consumo !== null) setEdit(campoId, prodId, 'c', consumo)
+          setCAF(false)
+          toast.success('Datos CAF aplicados — recuerda guardar')
+        }} />}
+    </div>
+  )
+}
+
+// ---- Input numérico ----
+function NumInput({ val, filled, onChange, cls = '' }: {
+  val: number; filled: boolean; onChange: (v: number) => void; cls?: string
+}) {
+  const [local, setLocal] = useState(val > 0 ? String(val) : '')
+  useEffect(() => { setLocal(val > 0 ? String(val) : '') }, [val])
+  return (
+    <input type="number" value={local} min={0} placeholder="0"
+      className={`w-20 text-right py-1 px-1.5 text-xs rounded border font-mono outline-none focus:ring-1 focus:ring-green-500 focus:bg-white transition-colors ${filled ? 'bg-yellow-50 border-yellow-300' : `bg-gray-50 border-gray-300 ${cls}`}`}
+      onChange={e => {
+        setLocal(e.target.value)
+        const n = parseFloat(e.target.value)
+        onChange(isNaN(n) ? 0 : n)
+      }} />
+  )
+}
+
+// ---- Tab Consumo ----
+function TabConsumo({ stock, campos, fecha }: { stock: StockFila[]; campos: Campo[]; fecha: string }) {
+  const BALS = ['SHRIMP PELLET #5', 'OPTILINE ME / NG', 'LORICA NG']
+  const fechaFmt = new Date(fecha + 'T12:00:00').toLocaleDateString('es-EC',
+    { weekday:'long', day:'numeric', month:'long', year:'numeric' })
+  return (
+    <div>
+      <div className="text-sm font-semibold text-[#2d5a3d] mb-3 capitalize">📅 {fechaFmt}</div>
+      <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto">
+        <table className="w-full text-xs min-w-[700px]">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left px-3 py-2 text-gray-400 text-[10px] uppercase" rowSpan={2}>Camaronera</th>
+              {BALS.map(b => <th key={b} colSpan={2} className="text-center px-2 py-1.5 text-[10px] uppercase bg-gray-50 border-l">{b}</th>)}
+              <th className="text-right px-3 py-2 text-gray-400 text-[10px] uppercase" rowSpan={2}>Kg/Ha</th>
+            </tr>
+            <tr className="border-b">
+              {BALS.map(b => (<>
+                <th key={`${b}s`} className="text-right px-2 py-1 text-[10px] text-gray-400 bg-gray-50 border-l">Sacos</th>
+                <th key={`${b}t`} className="text-right px-2 py-1 text-[10px] text-gray-400 bg-gray-50">TN</th>
+              </>))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from(new Map(stock.map(f => [f.campo_id, f])).values()).map(cf => {
+              const campo = campos.find(c => c.id === cf.campo_id)
+              const ha    = campo?.hectareas ?? 1
+              const filas = stock.filter(f => f.campo_id === cf.campo_id)
+              const totalTn = filas.reduce((s, f) => s + sacosATn(f.consumo_diario_sacos), 0)
+              return (
+                <tr key={cf.campo_id} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="px-3 py-1.5 font-medium">🦐 {cf.campo_nombre}</td>
+                  {BALS.map(bal => {
+                    const f = filas.find(x => x.producto_nombre === bal)
+                    const s = f?.consumo_diario_sacos ?? 0
+                    return (<>
+                      <td key={`${bal}s`} className="text-right px-2 py-1.5 font-mono border-l">{s || '—'}</td>
+                      <td key={`${bal}t`} className="text-right px-2 py-1.5 font-mono text-gray-500">{s > 0 ? sacosATn(s).toFixed(2) : '—'}</td>
+                    </>)
+                  })}
+                  <td className="text-right px-3 py-1.5 font-semibold font-mono">
+                    {ha > 0 ? (kgHa(totalTn, ha) ?? 0).toFixed(2) : '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ---- Tab Historial ----
+function TabHistorial() {
+  const hoy   = new Date().toISOString().split('T')[0]
+  const hace30 = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
+  const [desde,  setDesde]  = useState(hace30)
+  const [hasta,  setHasta]  = useState(hoy)
+  const [data,   setData]   = useState<any[]>([])
+  const [loading,setLoading]= useState(false)
+
+  async function cargar() {
+    setLoading(true)
+    const r = await fetch(`/api/snapshots?desde=${desde}&hasta=${hasta}`)
+    setData(await r.json())
+    setLoading(false)
+  }
+
+  return (
+    <div>
+      <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4 flex gap-3 flex-wrap items-end">
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">Desde</label>
+          <input type="date" value={desde} onChange={e => setDesde(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-gray-50 outline-none focus:border-[#2d5a3d]" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">Hasta</label>
+          <input type="date" value={hasta} onChange={e => setHasta(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-gray-50 outline-none focus:border-[#2d5a3d]" />
+        </div>
+        <button onClick={cargar}
+          className="bg-[#2d5a3d] text-white text-xs font-semibold px-4 py-1.5 rounded-lg hover:bg-[#245030]">
+          Buscar
+        </button>
+      </div>
+      {loading && <div className="text-center py-8 text-gray-400 text-sm">Cargando…</div>}
+      {!loading && data.length === 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-gray-400 text-sm">
+          📭 No hay registros. Presiona "Buscar" para cargar el historial.
+        </div>
+      )}
+      {!loading && data.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50 border-b">
+              <tr>
+                {['Fecha','Campo','Total sacos','TN','Consumo/día','Días prom.'].map(h => (
+                  <th key={h} className="text-left px-3 py-2 text-gray-400 uppercase text-[10px] font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((s: any) => {
+                const total  = s.detalle?.reduce((a: number, d: any) => a + d.stock_total_sacos, 0) ?? 0
+                const totalTn = s.detalle?.reduce((a: number, d: any) => a + Number(d.stock_total_tn), 0) ?? 0
+                const consumo = s.detalle?.reduce((a: number, d: any) => a + d.consumo_diario_sacos, 0) ?? 0
+                const dias    = consumo > 0 ? (total / consumo) : null
+                return (
+                  <tr key={s.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="px-3 py-2">
+                      {new Date(s.fecha + 'T12:00:00').toLocaleDateString('es-EC', { weekday:'short', day:'numeric', month:'short' })}
+                    </td>
+                    <td className="px-3 py-2 font-medium">{s.campo?.nombre ?? '—'}</td>
+                    <td className="px-3 py-2 font-mono font-semibold">{fmtN(total)}</td>
+                    <td className="px-3 py-2 font-mono text-gray-500">{fmtTn(totalTn)}</td>
+                    <td className="px-3 py-2 font-mono">{fmtN(consumo)}</td>
+                    <td className="px-3 py-2"><Badge nivel={nivelAlerta(dias)} dias={dias} /></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---- Modal CAF ----
+function ModalCAF({ campos, productos, onClose, onAplicar }: {
+  campos: Campo[]
+  productos: Producto[]
+  onClose: () => void
+  onAplicar: (campoId: string, prodId: string, saldo: number | null, consumo: number | null) => void
+}) {
+  const [campoId, setCampoId]  = useState('')
+  const [prodId,  setProdId]   = useState('')
+  const [preview, setPreview]  = useState('')
+  const [estado,  setEstado]   = useState<'idle'|'subiendo'|'analizando'|'listo'|'error'>('idle')
+  const [resultado, setResult] = useState<{ saldo: number|null; consumo: number|null; notas: string } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const supabase = supabaseBrowser()
+
+  async function procesar(file: File) {
+    if (!campoId || !prodId) { toast.error('Selecciona campo y balanceado primero'); return }
+    setEstado('subiendo')
+
+    // Preview
+    const reader = new FileReader()
+    reader.onload = e => setPreview(e.target?.result as string)
+    reader.readAsDataURL(file)
+
+    try {
+      // 1. Subir a Supabase Storage
+      const ext  = file.name.split('.').pop() ?? 'jpg'
+      const path = `${campoId}/${Date.now()}.${ext}`
+      const { data: up, error: upErr } = await supabase.storage
+        .from('caf-imagenes').upload(path, file)
+      if (upErr) throw upErr
+
+      const { data: { publicUrl } } = supabase.storage.from('caf-imagenes').getPublicUrl(up.path)
+
+      // 2. Crear registro CAF
+      const { data: reg, error: regErr } = await supabase
+        .from('caf_registros')
+        .insert({ campo_id: campoId, producto_id: prodId,
+          fecha_caf: new Date().toISOString().split('T')[0],
+          imagen_url: publicUrl, subido_por: (await supabase.auth.getUser()).data.user!.id })
+        .select('id').single()
+      if (regErr) throw regErr
+
+      // 3. Convertir a base64 para el análisis
+      setEstado('analizando')
+      const b64 = await new Promise<string>((res, rej) => {
+        const r2 = new FileReader()
+        r2.onload = e => res((e.target?.result as string).split(',')[1])
+        r2.onerror = rej
+        r2.readAsDataURL(file)
+      })
+
+      // 4. Llamar al proxy
+      const resp = await fetch('/api/caf/analizar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: b64, mediaType: file.type,
+          campoId, productoId: prodId, cafRegistroId: reg.id }),
+      })
+      if (!resp.ok) throw new Error((await resp.json()).error)
+      const r = await resp.json()
+      setResult({ saldo: r.saldo_sacos, consumo: r.consumo_sacos, notas: r.notas })
+      setEstado('listo')
+    } catch (e: any) {
+      toast.error(e.message ?? 'Error al procesar')
+      setEstado('error')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-y-auto max-h-[90vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <h2 className="font-semibold text-base">📷 Cargar CAF</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {/* Paso 1: Campo */}
+          <div>
+            <p className="text-xs text-gray-500 mb-2"><strong>Paso 1:</strong> ¿A qué campo corresponde?</p>
+            <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
+              {campos.map(c => (
+                <button key={c.id} onClick={() => setCampoId(c.id)}
+                  className={`py-2 px-2 rounded-lg border text-xs font-medium text-center transition-all ${campoId === c.id ? 'border-[#2d5a3d] bg-[#2d5a3d] text-white' : 'border-gray-200 bg-gray-50 hover:border-green-500'}`}>
+                  {c.nombre}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Paso 2: Producto */}
+          {campoId && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2"><strong>Paso 2:</strong> ¿Qué balanceado?</p>
+              <select value={prodId} onChange={e => setProdId(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-gray-50 outline-none focus:border-[#2d5a3d]">
+                <option value="">— Selecciona —</option>
+                {productos.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              </select>
+            </div>
+          )}
+
+          {/* Paso 3: Imagen */}
+          {campoId && prodId && estado === 'idle' && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2"><strong>Paso 3:</strong> Sube la foto del CAF</p>
+              <div onClick={() => fileRef.current?.click()}
+                className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-[#2d5a3d] hover:bg-green-50 transition-all">
+                <div className="text-3xl mb-2">📄</div>
+                <p className="text-sm text-gray-500">Toca para seleccionar imagen</p>
+                <p className="text-xs text-gray-400 mt-1">JPG, PNG</p>
+                <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) procesar(f) }} />
+              </div>
+            </div>
+          )}
+
+          {/* Preview */}
+          {preview && <img src={preview} alt="CAF" className="w-full rounded-lg border border-gray-200" />}
+
+          {/* Estado */}
+          {(estado === 'subiendo' || estado === 'analizando') && (
+            <div className="flex items-center gap-3 bg-gray-50 rounded-xl px-4 py-3">
+              <div className="w-5 h-5 border-2 border-gray-200 border-t-[#2d5a3d] rounded-full animate-spin" />
+              <span className="text-sm text-gray-500">
+                {estado === 'subiendo' ? 'Subiendo imagen…' : 'Analizando con IA…'}
+              </span>
+            </div>
+          )}
+
+          {/* Resultado */}
+          {estado === 'listo' && resultado && (
+            <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 space-y-2">
+              <p className="text-sm font-semibold text-green-800">✅ Datos extraídos</p>
+              {[
+                { label: 'Saldo (sacos)', val: resultado.saldo !== null ? `${resultado.saldo} sacos` : 'No detectado' },
+                { label: 'Consumo (sacos/día)', val: resultado.consumo !== null ? `${resultado.consumo} sacos/día` : 'No detectado' },
+                ...(resultado.notas ? [{ label: 'Notas IA', val: resultado.notas }] : []),
+              ].map(r => (
+                <div key={r.label} className="flex justify-between text-sm gap-4">
+                  <span className="text-gray-500">{r.label}</span>
+                  <span className="font-semibold font-mono text-green-800">{r.val}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {estado === 'error' && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+              ❌ Error al procesar. Intenta con otra imagen.
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 px-5 py-4 border-t">
+          <button onClick={onClose}
+            className="flex-1 py-2.5 text-sm text-gray-500 border border-gray-200 rounded-xl hover:bg-gray-50">
+            Cancelar
+          </button>
+          <button
+            disabled={estado !== 'listo'}
+            onClick={() => {
+              if (resultado && campoId && prodId)
+                onAplicar(campoId, prodId, resultado.saldo, resultado.consumo)
+            }}
+            className="flex-1 py-2.5 text-sm font-semibold bg-[#2d5a3d] text-white rounded-xl disabled:opacity-40 hover:bg-[#245030] transition-colors">
+            Aplicar al stock
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
