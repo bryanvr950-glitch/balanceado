@@ -10,9 +10,10 @@ export function supabaseServer() {
     {
       cookies: {
         getAll: () => store.getAll(),
-        setAll: (list) => {
-          try { list.forEach(({ name, value, options }) => store.set(name, value, options)) }
-          catch { /* server component */ }
+        setAll: (list: any[]) => {
+          try {
+            list.forEach(({ name, value, options }: any) => store.set(name, value, options))
+          } catch {}
         },
       },
     }

@@ -1,5 +1,3 @@
-export type NivelAlerta = 'verde' | 'amarillo' | 'rojo' | 'sin_consumo'
-
 export interface Campo {
   id: string
   codigo: string
@@ -29,11 +27,5 @@ export interface StockFila {
   stock_total_tn: number
   consumo_diario_sacos: number
   dias_inventario: number | null
-  nivel_alerta: NivelAlerta
-}
-
-export interface ResultadoCAF {
-  saldo_kg: number | null
-  consumo_kg: number | null
-  notas: string
+  nivel_alerta: string
 }
