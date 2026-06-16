@@ -1,30 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseServer } from '@/lib/supabase-server'
+import { createClient } from '@supabase/supabase-js'
+
+export const dynamic = 'force-dynamic'
+
+function getAdmin() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  )
+}
 
 export async function POST(req: NextRequest) {
-  const s = supabaseServer()
-  const { data: { user } } = await s.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
-  const { fecha, campo_id, detalle } = await req.json()
-  const { data: snap, error: e1 } = await s
+  const { fecha, campo_id, detalle, user_id } = await req.json()
+  if (!user_id) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+
+  const admin = getAdmin()
+  const { data: snap, error: e1 } = await admin
     .from('stock_snapshots')
-    .upsert({ fecha, campo_id, creado_por: user.id, fuente: 'manual' }, { onConflict: 'fecha,campo_id' })
+    .upsert({ fecha, campo_id, creado_por: user_id, fuente: 'manual' }, { onConflict: 'fecha,campo_id' })
     .select('id').single()
+
   if (e1 || !snap) return NextResponse.json({ error: e1?.message }, { status: 500 })
-  await s.from('snapshot_detalle').delete().eq('snapshot_id', snap.id)
-  const { error: e2 } = await s.from('snapshot_detalle').insert(
+
+  await admin.from('snapshot_detalle').delete().eq('snapshot_id', snap.id)
+  const { error: e2 } = await admin.from('snapshot_detalle').insert(
     detalle.map((d: any) => ({ ...d, snapshot_id: snap.id }))
   )
   if (e2) return NextResponse.json({ error: e2.message }, { status: 500 })
-  await s.rpc('refresh_stock')
+
+  await admin.rpc('refresh_stock')
   return NextResponse.json({ ok: true, snapshot_id: snap.id })
 }
 
-export async function GET(req: NextRequest) {
-  const s = supabaseServer()
-  const { data: { user } } = await s.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
-  const { data, error } = await s
+export async function GET() {
+  const admin = getAdmin()
+  const { data, error } = await admin
     .from('stock_snapshots')
     .select(`id,fecha,campo_id,fuente,
       campo:campos(nombre),
