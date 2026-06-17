@@ -83,7 +83,7 @@ export default function StockPage() {
         const token = session?.access_token ?? ""
         const userId = session?.user?.id ?? ""
         const res = await fetch("/api/snapshots", {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+         method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ fecha, campo_id: campoId, detalle: [...detalle, ...sinEditar], user_id: userId }),
         })
