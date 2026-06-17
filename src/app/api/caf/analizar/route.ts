@@ -10,9 +10,12 @@ Responde SOLO con este JSON sin markdown:
 {"saldo_kg": <número o null>, "consumo_kg": <número o null>, "notas": ""}`
 
 export async function POST(req: NextRequest) {
-  const s = supabaseServer()
-  const { data: { user } } = await s.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+ const admin = supabaseAdmin()
+const authHeader = req.headers.get('authorization')
+if (!authHeader) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+const token = authHeader.replace('Bearer ', '')
+const { data: { user } } = await admin.auth.getUser(token)
+if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
   const { imageBase64, mediaType, campoId, productoId, cafRegistroId } = await req.json()
 
