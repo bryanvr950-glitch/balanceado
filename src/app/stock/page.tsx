@@ -364,11 +364,11 @@ function ModalCAF({ campos, productos, onClose, onAplicar }: any) {
       if (regErr) throw regErr
       setEstado('analizando')
       const b64 = await new Promise<string>((res, rej) => { const r2 = new FileReader(); r2.onload = e => res((e.target?.result as string).split(',')[1]); r2.onerror = rej; r2.readAsDataURL(file) })
-      const resp = await fetch('/api/caf/analizar', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: b64, mediaType: file.type, campoId, productoId: prodId, cafRegistroId: reg.id }),
-      })
-      if (!resp.ok) throw new Error((await resp.json()).error)
+      const { data: { session } } = await supabase.auth.getSession()
+const resp = await fetch('/api/caf/analizar', {
+  method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+  body: JSON.stringify({ imageBase64: b64, mediaType: file.type, campoId, productoId: prodId, cafRegistroId: reg.id }),
+})      if (!resp.ok) throw new Error((await resp.json()).error)
       const r = await resp.json()
       setResult({ saldo: r.saldo_sacos, consumo: r.consumo_sacos, notas: r.notas })
       setEstado('listo')
