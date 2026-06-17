@@ -12,13 +12,32 @@ function getAdmin() {
 }
 
 export async function POST(req: NextRequest) {
-  const { fecha, campo_id, detalle, user_id } = await req.json()
-  if (!user_id) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+  const body = await req.json()
+  const { fecha, campo_id, detalle, user_id } = body
+
+  if (!campo_id || !fecha || !detalle?.length) {
+    return NextResponse.json({ error: 'Datos incompletos' }, { status: 400 })
+  }
+
+  // Obtener user_id del token de autorización si no viene en el body
+  const authHeader = req.headers.get('authorization')
+  let userId = user_id
+
+  if (!userId && authHeader) {
+    const token = authHeader.replace('Bearer ', '')
+    const admin = getAdmin()
+    const { data } = await admin.auth.getUser(token)
+    userId = data.user?.id
+  }
+
+  if (!userId) {
+    return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+  }
 
   const admin = getAdmin()
   const { data: snap, error: e1 } = await admin
     .from('stock_snapshots')
-    .upsert({ fecha, campo_id, creado_por: user_id, fuente: 'manual' }, { onConflict: 'fecha,campo_id' })
+    .upsert({ fecha, campo_id, creado_por: userId, fuente: 'manual' }, { onConflict: 'fecha,campo_id' })
     .select('id').single()
 
   if (e1 || !snap) return NextResponse.json({ error: e1?.message }, { status: 500 })

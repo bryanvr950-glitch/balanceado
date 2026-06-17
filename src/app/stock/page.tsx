@@ -1,6 +1,7 @@
 'use client'
 export const dynamic = 'force-dynamic'
 import { useState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 import { Badge } from '@/components/ui/Badge'
 import { sacosATn, kgHa, diasInventario, nivelAlerta, fmtN, fmtTn, fmtDias } from '@/lib/calculos'
@@ -16,15 +17,33 @@ export default function StockPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [caf, setCAF] = useState(false)
+  const [authChecked, setAuthChecked] = useState(false)
+  const router = useRouter()
   const supabase = supabaseBrowser()
 
+  // Verificar autenticación al cargar
   useEffect(() => {
-    Promise.all([
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) {
+        router.push('/login')
+      } else {
+        setAuthChecked(true)
+        loadData()
+      }
+    })
+  }, [])
+
+  async function loadData() {
+    const [stockRes, camposRes, prodsRes] = await Promise.all([
       fetch('/api/stock').then(r => r.json()),
       supabase.from('campos').select('id,codigo,nombre,hectareas,empresa_id,empresa:empresas(codigo,nombre)').then(r => r.data ?? []),
       supabase.from('productos').select('*').then(r => r.data ?? []),
-    ]).then(([s, c, p]) => { setStock(s); setCampos(c as any[]); setProds(p as any[]); setLoading(false) })
-  }, [])
+    ])
+    setStock(stockRes)
+    setCampos(camposRes as any[])
+    setProds(prodsRes as any[])
+    setLoading(false)
+  }
 
   const porCampo = new Map<string, any[]>()
   for (const f of stock) {
@@ -50,23 +69,37 @@ export default function StockPage() {
     if (!Object.keys(edits).length) { toast.error('Sin cambios'); return }
     setSaving(true)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { toast.error('Sesion expirada, vuelve a ingresar'); setSaving(false); return }
+      const userId = session.user.id
+      const token = session.access_token
       for (const [campoId, prodMap] of Object.entries(edits)) {
         const detalle = Object.entries(prodMap as any).map(([producto_id, v]: any) => ({
           producto_id, stock_caf_sacos: v.s, ingreso_sacos: v.i, consumo_diario_sacos: v.c,
         }))
         const sinEditar = stock.filter(f => f.campo_id === campoId && !(prodMap as any)[f.producto_id])
           .map(f => ({ producto_id: f.producto_id, stock_caf_sacos: f.stock_caf_sacos, ingreso_sacos: f.ingreso_sacos, consumo_diario_sacos: f.consumo_diario_sacos }))
-        const res = await fetch('/api/snapshots', {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token ?? ""
+        const userId = session?.user?.id ?? ""
+        const res = await fetch("/api/snapshots", {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fecha, campo_id: campoId, detalle: [...detalle, ...sinEditar] }),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ fecha, campo_id: campoId, detalle: [...detalle, ...sinEditar], user_id: userId }),
         })
         if (!res.ok) throw new Error((await res.json()).error)
       }
-      const s = await fetch('/api/stock').then(r => r.json())
-      setStock(s); setEdits({})
+      await loadData()
+      setEdits({})
       toast.success(`✅ ${fecha} guardado`)
     } catch (e: any) { toast.error(e.message) } finally { setSaving(false) }
   }
+
+  if (!authChecked) return (
+    <div className="min-h-screen bg-[#f4f1eb] flex items-center justify-center">
+      <div className="text-gray-400 text-sm">Verificando sesión…</div>
+    </div>
+  )
 
   const totalSacos = stock.reduce((s, f) => s + f.stock_total_sacos, 0)
   const enRojo = new Set(stock.filter(f => f.nivel_alerta === 'rojo').map(f => f.campo_id)).size
@@ -88,7 +121,7 @@ export default function StockPage() {
           className={`text-xs px-3 py-1.5 rounded-full font-semibold ${hayEdits ? 'bg-white text-[#2d5a3d]' : 'bg-white/15 text-white/50 cursor-not-allowed'}`}>
           {saving ? '⏳' : '💾'} Guardar
         </button>
-        <button onClick={async () => { await supabase.auth.signOut(); window.location.href = '/login' }}
+        <button onClick={async () => { await supabase.auth.signOut(); router.push('/login') }}
           className="text-white/50 hover:text-white text-xs px-2">⎋</button>
       </header>
 
@@ -259,10 +292,6 @@ function TabConsumo({ stock, campos, fecha }: any) {
 }
 
 function TabHistorial() {
-  const hoy = new Date().toISOString().split('T')[0]
-  const hace30 = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-  const [desde, setDesde] = useState(hace30)
-  const [hasta, setHasta] = useState(hoy)
   const [data, setData] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   async function cargar() {
@@ -273,20 +302,16 @@ function TabHistorial() {
   }
   return (
     <div>
-      <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4 flex gap-3 flex-wrap items-end">
-        <div><label className="text-xs text-gray-400 block mb-1">Desde</label>
-          <input type="date" value={desde} onChange={e => setDesde(e.target.value)} className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-gray-50 outline-none" /></div>
-        <div><label className="text-xs text-gray-400 block mb-1">Hasta</label>
-          <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-gray-50 outline-none" /></div>
-        <button onClick={cargar} className="bg-[#2d5a3d] text-white text-xs font-semibold px-4 py-1.5 rounded-lg">Buscar</button>
+      <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4 flex gap-3">
+        <button onClick={cargar} className="bg-[#2d5a3d] text-white text-xs font-semibold px-4 py-1.5 rounded-lg">Cargar historial</button>
       </div>
       {loading && <div className="text-center py-8 text-gray-400 text-sm">Cargando…</div>}
-      {!loading && data.length === 0 && <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-gray-400 text-sm">📭 Presiona "Buscar" para cargar el historial.</div>}
+      {!loading && data.length === 0 && <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-gray-400 text-sm">📭 Presiona "Cargar historial".</div>}
       {!loading && data.length > 0 && (
         <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
           <table className="w-full text-xs">
             <thead className="bg-gray-50 border-b">
-              <tr>{['Fecha','Campo','Total sacos','TN','Consumo/día','Días prom.'].map(h => (
+              <tr>{['Fecha','Campo','Total sacos','TN','Consumo/día','Días'].map(h => (
                 <th key={h} className="text-left px-3 py-2 text-gray-400 uppercase text-[10px] font-medium">{h}</th>
               ))}</tr>
             </thead>
@@ -400,10 +425,9 @@ function ModalCAF({ campos, productos, onClose, onAplicar }: any) {
               <p className="text-sm font-semibold text-green-800">✅ Datos extraídos</p>
               <div className="flex justify-between text-sm"><span className="text-gray-500">Saldo (sacos)</span><span className="font-semibold font-mono text-green-800">{resultado.saldo ?? 'No detectado'}</span></div>
               <div className="flex justify-between text-sm"><span className="text-gray-500">Consumo (sacos/día)</span><span className="font-semibold font-mono text-green-800">{resultado.consumo ?? 'No detectado'}</span></div>
-              {resultado.notas && <div className="text-xs text-gray-500">{resultado.notas}</div>}
             </div>
           )}
-          {estado === 'error' && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">❌ Error al procesar. Intenta con otra imagen.</div>}
+          {estado === 'error' && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">❌ Error al procesar.</div>}
         </div>
         <div className="flex gap-2 px-5 py-4 border-t">
           <button onClick={onClose} className="flex-1 py-2.5 text-sm text-gray-500 border border-gray-200 rounded-xl">Cancelar</button>
