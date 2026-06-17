@@ -21,7 +21,6 @@ export default function StockPage() {
   const router = useRouter()
   const supabase = supabaseBrowser()
 
-  // Verificar autenticación al cargar
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) {
@@ -80,7 +79,7 @@ export default function StockPage() {
         const sinEditar = stock.filter(f => f.campo_id === campoId && !(prodMap as any)[f.producto_id])
           .map(f => ({ producto_id: f.producto_id, stock_caf_sacos: f.stock_caf_sacos, ingreso_sacos: f.ingreso_sacos, consumo_diario_sacos: f.consumo_diario_sacos }))
         const res = await fetch("/api/snapshots", {
-         method: 'POST',
+          method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ fecha, campo_id: campoId, detalle: [...detalle, ...sinEditar], user_id: userId }),
         })
@@ -365,10 +364,12 @@ function ModalCAF({ campos, productos, onClose, onAplicar }: any) {
       setEstado('analizando')
       const b64 = await new Promise<string>((res, rej) => { const r2 = new FileReader(); r2.onload = e => res((e.target?.result as string).split(',')[1]); r2.onerror = rej; r2.readAsDataURL(file) })
       const { data: { session } } = await supabase.auth.getSession()
-const resp = await fetch('/api/caf/analizar', {
-  method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-  body: JSON.stringify({ imageBase64: b64, mediaType: file.type, campoId, productoId: prodId, cafRegistroId: reg.id }),
-})      if (!resp.ok) throw new Error((await resp.json()).error)
+      const resp = await fetch('/api/caf/analizar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ imageBase64: b64, mediaType: file.type, campoId, productoId: prodId, cafRegistroId: reg.id }),
+      })
+      if (!resp.ok) throw new Error((await resp.json()).error)
       const r = await resp.json()
       setResult({ saldo: r.saldo_sacos, consumo: r.consumo_sacos, notas: r.notas })
       setEstado('listo')
