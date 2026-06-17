@@ -79,9 +79,6 @@ export default function StockPage() {
         }))
         const sinEditar = stock.filter(f => f.campo_id === campoId && !(prodMap as any)[f.producto_id])
           .map(f => ({ producto_id: f.producto_id, stock_caf_sacos: f.stock_caf_sacos, ingreso_sacos: f.ingreso_sacos, consumo_diario_sacos: f.consumo_diario_sacos }))
-        const { data: { session } } = await supabase.auth.getSession()
-        const token = session?.access_token ?? ""
-        const userId = session?.user?.id ?? ""
         const res = await fetch("/api/snapshots", {
          method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
