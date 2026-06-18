@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
 import { supabaseAdmin } from '@/lib/supabase-server'
 
 const PROMPT = `Eres un asistente que extrae datos de planillas CAF de camaroneras.
@@ -20,20 +19,25 @@ export async function POST(req: NextRequest) {
   const { imageBase64, mediaType, campoId, productoId, cafRegistroId } = await req.json()
   await admin.from('caf_registros').update({ estado: 'procesando' }).eq('id', cafRegistroId)
   try {
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-    const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 300,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-          { type: 'text', text: PROMPT },
-        ],
-      }],
-    })
-    const raw = msg.content.map((c: any) => c.type === 'text' ? c.text : '').join('').replace(/```json|```/g, '').trim()
-    const result = JSON.parse(raw)
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inline_data: { mime_type: mediaType, data: imageBase64 } },
+              { text: PROMPT }
+            ]
+          }]
+        })
+      }
+    )
+    const geminiData = await response.json()
+    const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+    const clean = raw.replace(/```json|```/g, '').trim()
+    const result = JSON.parse(clean)
     const saldo_kg = typeof result.saldo_kg === 'number' ? result.saldo_kg : null
     const consumo_kg = typeof result.consumo_kg === 'number' ? result.consumo_kg : null
     await admin.from('caf_items').insert({
@@ -41,8 +45,8 @@ export async function POST(req: NextRequest) {
       saldo_kg_extraido: saldo_kg,
       consumo_kg_extraido: consumo_kg,
       notas_ia: result.notas ?? '',
-      modelo_ia: msg.model,
-      tokens_usados: msg.usage.input_tokens + msg.usage.output_tokens,
+      modelo_ia: 'gemini-1.5-flash',
+      tokens_usados: 0,
     })
     await admin.from('caf_registros').update({ estado: 'extraido', producto_id: productoId ?? null }).eq('id', cafRegistroId)
     return NextResponse.json({
