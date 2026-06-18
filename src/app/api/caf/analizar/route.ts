@@ -53,8 +53,9 @@ export async function POST(req: NextRequest) {
       consumo_sacos: consumo_kg !== null ? Math.round(consumo_kg / 25 * 10) / 10 : null,
       notas: result.notas ?? '',
     })
-  } catch (err) {
+  } catch (err: any) {
+    console.error('CAF ERROR:', err?.message ?? err)
     await admin.from('caf_registros').update({ estado: 'error' }).eq('id', cafRegistroId)
-    return NextResponse.json({ error: 'Error al procesar imagen' }, { status: 500 })
+    return NextResponse.json({ error: err?.message ?? 'Error al procesar imagen' }, { status: 500 })
   }
 }
