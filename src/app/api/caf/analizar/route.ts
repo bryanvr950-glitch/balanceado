@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   await admin.from('caf_registros').update({ estado: 'procesando' }).eq('id', cafRegistroId)
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
       saldo_kg_extraido: saldo_kg,
       consumo_kg_extraido: consumo_kg,
       notas_ia: result.notas ?? '',
-      modelo_ia: 'gemini-1.5-flash',
+      modelo_ia: 'gemini-2.0-flash',
       tokens_usados: 0,
     })
     await admin.from('caf_registros').update({ estado: 'extraido', producto_id: productoId ?? null }).eq('id', cafRegistroId)
