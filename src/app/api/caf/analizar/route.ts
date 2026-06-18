@@ -35,9 +35,12 @@ export async function POST(req: NextRequest) {
       }
     )
     const geminiData = await response.json()
+    console.error('GEMINI RESPONSE:', JSON.stringify(geminiData).slice(0, 500))
     const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const result = JSON.parse(clean)
+    console.error('GEMINI RAW:', raw)
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (!match) throw new Error('No JSON found: ' + raw.slice(0, 200))
+    const result = JSON.parse(match[0])
     const saldo_kg = typeof result.saldo_kg === 'number' ? result.saldo_kg : null
     const consumo_kg = typeof result.consumo_kg === 'number' ? result.consumo_kg : null
     await admin.from('caf_items').insert({
